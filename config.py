@@ -1,14 +1,44 @@
-import os
-import json
+from os import getenv
+from dotenv import load_dotenv
+import logging
+from logging.handlers import RotatingFileHandler
 
-env_file = "env.json"
-if os.path.exists(env_file):
-    with open(env_file) as f:
-        env_vars = json.loads(f.read())
-else:
-    env_vars = dict(os.environ)
+load_dotenv()
+LOGS = logging.getLogger(__name__)
 
-dbname = env_vars.get('DATABASE_URL_PRIMARY') or env_vars.get('DATABASE_URL') or 'sqlite:///test.db'
+class Config:
+    API_ID = getenv("API_ID")
+    API_HASH = getenv("API_HASH")
+    BOT_TOKEN = getenv("BOT_TOKEN")
+    DB_URI = getenv("DB_URI")
+    DB_NAME = getenv("DB_NAME")
+    DB_CHANNEL_ID = int(getenv("CHANNEL_ID", "0"))
+    MAIN_CHANNEL_URL = getenv("MAIN_CHANNEL_URL")
+    CUSTOM_BANNER = getenv("CUSTOM_BANNER", "https://envs.sh/im5.jpg")
+    PROTECT_CONTENT = True if getenv('PROTECT_CONTENT', "False") == "True" else False
+    RSS_ITEMS = getenv("RSS_ITEMS", "").split()
+    CHANNEL_USERNAME = getenv("CHANNEL_USERNAME", "")
+    START_PIC = getenv("START_PIC","https://envs.sh/im5.jpg")
+    FORCE_PIC = getenv("FORCE_PIC", "https://envs.sh/im5.jpg")
 
-if dbname.startswith('postgres://'):
-    dbname = dbname.replace('postgres://', 'postgresql://', 1)
+
+LOG_FILE_NAME = "automanga.txt"
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="[%(asctime)s - %(levelname)s] - %(name)s - %(message)s",
+    datefmt='%d-%b-%y %H:%M:%S',
+    handlers=[
+        RotatingFileHandler(
+            LOG_FILE_NAME,
+            maxBytes=50000000,
+            backupCount=10
+        ),
+        logging.StreamHandler()
+    ]
+)
+logging.getLogger("pyrogram").setLevel(logging.WARNING)
+
+
+def LOGGER(name: str) -> logging.Logger:
+    return logging.getLogger(name)
