@@ -8,6 +8,8 @@ from datetime import datetime, timedelta
 from telegram import Bot
 from telegram.error import TelegramError
 import asyncio
+from bs4 import BeautifulSoup
+import re
 
 class MangaDexScraperBot:
     def __init__(self, telegram_token, channel_id, manga_ids, check_interval=300):
@@ -27,6 +29,7 @@ class MangaDexScraperBot:
         
         # MangaDex API settings
         self.api_base = "https://api.mangadex.org"
+        self.web_base = "https://mangadex.org"
         self.img_base = "https://uploads.mangadex.org"
         
         # Directories
@@ -50,7 +53,7 @@ class MangaDexScraperBot:
         if self.state_file.exists():
             with open(self.state_file, 'r') as f:
                 return json.load(f)
-        return {"last_checked": {}, "downloaded_chapters": {}}
+        return {"last_checked": {}, "downloaded_chapters": {}, "latest_chapters": {}}
     
     def save_state(self):
         """Save the bot state to file"""
@@ -76,6 +79,57 @@ class MangaDexScraperBot:
             print(f"API request failed: {e}")
             return None
     
+    def scrape_latest_chapter(self, manga_id):
+        """Scrape the latest chapter link from MangaDex website"""
+        try:
+            url = f"{self.web_base}/title/{manga_id}"
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            }
+            response = requests.get(url, headers=headers, timeout=30)
+            response.raise_for_status()
+            
+            soup = BeautifulSoup(response.text, 'html.parser')
+            # Find chapter list items
+            chapter_elements = soup.find_all('div', class_='chapter-list-item')
+            
+            if not chapter_elements:
+                return None
+                
+            latest_chapter = chapter_elements[0]  # First item is the latest
+            chapter_link = latest_chapter.find('a', class_='chapter-link')
+            if not chapter_link:
+                return None
+                
+            chapter_href = chapter_link.get('href')
+            if not chapter_href:
+                return None
+                
+            # Extract chapter ID from URL
+            chapter_id = chapter_href.split('/')[-2]
+            
+            # Extract chapter number
+            chapter_num_elem = latest_chapter.find('span', class_='chapter-number')
+            chapter_num = chapter_num_elem.text.strip() if chapter_num_elem else "0"
+            
+            # Extract chapter title
+            chapter_title_elem = latest_chapter.find('span', class_='chapter-title')
+            chapter_title = chapter_title_elem.text.strip() if chapter_title_elem else ""
+            
+            # Extract publish date
+            publish_date_elem = latest_chapter.find('time')
+            publish_date = publish_date_elem.get('datetime') if publish_date_elem else datetime.now().isoformat()
+            
+            return {
+                "id": chapter_id,
+                "chapter": chapter_num,
+                "title": chapter_title,
+                "publish_at": publish_date
+            }
+        except Exception as e:
+            print(f"Scraping failed for manga {manga_id}: {e}")
+            return None
+    
     def get_manga_info(self, manga_id):
         """Get manga information"""
         data = self.api_request(f"/manga/{manga_id}")
@@ -86,7 +140,7 @@ class MangaDexScraperBot:
         return None
     
     def get_new_chapters(self, manga_id, since=None):
-        """Get new chapters for a manga"""
+        """Get new chapters for a manga, combining API and web scraping"""
         params = {
             "manga": manga_id,
             "translatedLanguage[]": ["en"],
@@ -99,40 +153,55 @@ class MangaDexScraperBot:
             params["publishAtSince"] = since
         
         data = self.api_request("/chapter", params=params)
-        
-        if not data or data.get("result") != "ok":
-            return []
-        
         chapters = []
-        for item in data["data"]:
-            chapter_id = item["id"]
-            attrs = item["attributes"]
+        
+        # Add API chapters
+        if data and data.get("result") == "ok":
+            for item in data["data"]:
+                chapter_id = item["id"]
+                attrs = item["attributes"]
+                
+                # Skip external chapters
+                if attrs.get("externalUrl"):
+                    continue
+                
+                # Get scanlation group
+                group_name = "Unknown"
+                for rel in item.get("relationships", []):
+                    if rel["type"] == "scanlation_group":
+                        group_name = rel.get("attributes", {}).get("name", "Unknown")
+                        break
+                
+                chapters.append({
+                    "id": chapter_id,
+                    "chapter": attrs.get("chapter", "0"),
+                    "title": attrs.get("title", ""),
+                    "pages": attrs.get("pages", 0),
+                    "publish_at": attrs.get("publishAt"),
+                    "group": group_name
+                })
+        
+        # Add scraped chapter if newer
+        scraped_chapter = self.scrape_latest_chapter(manga_id)
+        if scraped_chapter:
+            # Check if scraped chapter is newer than API chapters
+            scraped_time = datetime.fromisoformat(scraped_chapter["publish_at"].replace('Z', '+00:00'))
+            latest_api_time = max(
+                (datetime.fromisoformat(ch["publish_at"].replace('Z', '+00:00')) 
+                for ch in chapters), 
+                default=datetime.min.replace(tzinfo=None)
+            )
             
-            # Skip external chapters
-            if attrs.get("externalUrl"):
-                continue
-            
-            # Get scanlation group
-            group_name = "Unknown"
-            for rel in item.get("relationships", []):
-                if rel["type"] == "scanlation_group":
-                    group_name = rel.get("attributes", {}).get("name", "Unknown")
-                    break
-            
-            chapters.append({
-                "id": chapter_id,
-                "chapter": attrs.get("chapter", "0"),
-                "title": attrs.get("title", ""),
-                "pages": attrs.get("pages", 0),
-                "publish_at": attrs.get("publishAt"),
-                "group": group_name
-            })
+            if scraped_time > latest_api_time:
+                # Add group info for scraped chapter
+                scraped_chapter["group"] = "Unknown"
+                scraped_chapter["pages"] = 0  # Will be updated when downloading
+                chapters.insert(0, scraped_chapter)
         
         return chapters
     
     def get_chapter_images(self, chapter_id):
         """Get image URLs for a chapter"""
-        # Get chapter info with image data
         data = self.api_request(f"/at-home/server/{chapter_id}")
         
         if not data or data.get("result") != "ok":
@@ -154,21 +223,19 @@ class MangaDexScraperBot:
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
         
-        # Create input file for aria2c
         input_file = output_dir / "aria2c_input.txt"
         with open(input_file, 'w') as f:
             for i, url in enumerate(urls):
                 f.write(f"{url}\n")
                 f.write(f"  out={i+1:03d}.jpg\n")
         
-        # Run aria2c
         cmd = [
             "aria2c",
             "-i", str(input_file),
             "-d", str(output_dir),
-            "-x", "16",  # Max connections per file
-            "-s", "16",  # Split download
-            "-j", "5",   # Max concurrent downloads
+            "-x", "16",
+            "-s", "16",
+            "-j", "5",
             "--auto-file-renaming=false",
             "--allow-overwrite=true"
         ]
@@ -179,7 +246,6 @@ class MangaDexScraperBot:
                 print(f"aria2c error: {result.stderr}")
                 return False
             
-            # Clean up input file
             input_file.unlink()
             return True
         except Exception as e:
@@ -192,11 +258,9 @@ class MangaDexScraperBot:
         if chapter_title:
             chapter_name += f" - {chapter_title}"
         
-        # Sanitize filename
         chapter_name = "".join(c for c in chapter_name if c.isalnum() or c in (' ', '-', '_', '.'))
         archive_path = chapter_dir.parent / f"{chapter_name}.cbz"
         
-        # Create CBZ (ZIP with .cbz extension)
         import zipfile
         with zipfile.ZipFile(archive_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
             for img_file in sorted(chapter_dir.glob("*.jpg")):
@@ -230,12 +294,10 @@ class MangaDexScraperBot:
         
         print(f"Processing: {manga_title} - Chapter {chapter_num}")
         
-        # Check if already downloaded
         if chapter_id in self.state["downloaded_chapters"].get(manga_info["id"], []):
             print(f"  Already downloaded, skipping...")
             return
         
-        # Get image URLs
         print(f"Getting image URLs...")
         image_urls = self.get_chapter_images(chapter_id)
         if not image_urls:
@@ -244,30 +306,26 @@ class MangaDexScraperBot:
         
         print(f"Found {len(image_urls)} pages")
         
-        # Download images
         chapter_dir = self.download_dir / f"{manga_info['id']}" / f"chapter_{chapter_num}"
         print(f"Downloading with aria2c...")
         if not self.download_with_aria2c(image_urls, chapter_dir):
             print(f"  Download failed")
             return
         
-        # Create archive
         print(f"Creating CBZ archive...")
         archive_path = self.create_chapter_archive(
             chapter_dir, manga_title, chapter_num, chapter_title
         )
         
-        # Upload to Telegram
         caption = f"{manga_title} Ch-{chapter_num}\n @seishiro_atanime"
         if chapter_title:
-            caption += f"\n{caption}"
+            caption += f"\n{chapter_title}"
         
         print(f"  Uploading to Telegram...")
         asyncio.run(self.upload_to_telegram(archive_path, caption))
         
-        # Update state
         if manga_info["id"] not in self.state["downloaded_chapters"]:
-        self.state["downloaded_chapters"][manga_info["id"]] = []
+            self.state["downloaded_chapters"][manga_info["id"]] = []
         self.state["downloaded_chapters"][manga_info["id"]].append(chapter_id)
         self.save_state()
         
@@ -282,7 +340,6 @@ class MangaDexScraperBot:
         for manga_id in self.manga_ids:
             print(f"\nChecking manga: {manga_id}")
             
-            # Get manga info
             manga_info = self.get_manga_info(manga_id)
             if not manga_info:
                 print(f"  Failed to get manga info")
@@ -290,17 +347,14 @@ class MangaDexScraperBot:
             
             print(f"Title: {manga_info['title']}")
             
-            # Get last check time
             last_checked = self.state["last_checked"].get(manga_id)
             since_date = None
             if last_checked:
                 since_date = (datetime.fromisoformat(last_checked) - timedelta(hours=1)).isoformat()
             
-            # Get new chapters
             chapters = self.get_new_chapters(manga_id, since=since_date)
             print(f"  Found {len(chapters)} chapters")
             
-            # Filter out already downloaded chapters
             new_chapters = [
                 ch for ch in chapters
                 if ch["id"] not in self.state["downloaded_chapters"].get(manga_id, [])
@@ -308,14 +362,12 @@ class MangaDexScraperBot:
             
             if new_chapters:
                 print(f"New chapters to download: {len(new_chapters)}")
-                # Process chapters in order (oldest first)
                 for chapter in reversed(new_chapters):
                     self.process_chapter(manga_info, chapter)
-                    time.sleep(2)  # Small delay between chapters
+                    time.sleep(2)
             else:
                 print(f"No new chapters")
             
-            # Update last checked time
             self.state["last_checked"][manga_id] = datetime.now().isoformat()
             self.save_state()
     
@@ -344,18 +396,13 @@ class MangaDexScraperBot:
 
 # Example usage
 if __name__ == "__main__":
-    # List of manga IDs to monitor (get from MangaDex URL)
-    # Example: https://mangadex.org/title/MANGA_ID/manga-name
     MANGA_IDS = [
         "MANGA_ID_1",
         "MANGA_ID_2",
-        # Add more manga IDs here
     ]
     
-    # Check every 5 minutes (300 seconds)
     CHECK_INTERVAL = 300
     
-    # Create and run bot
     bot = MangaDexScraperBot(
         telegram_token=Config.BOT_TOKEN,
         channel_id=Config.CHANNEL_ID,
