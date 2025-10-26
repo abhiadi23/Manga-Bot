@@ -14,13 +14,11 @@ class Config:
     DB_NAME = getenv("DB_NAME")
     DB_CHANNEL_ID = int(getenv("CHANNEL_ID", "0"))
     MAIN_CHANNEL_URL = getenv("MAIN_CHANNEL_URL")
-    CUSTOM_BANNER = getenv("CUSTOM_BANNER", "https://envs.sh/im5.jpg")
     PROTECT_CONTENT = True if getenv('PROTECT_CONTENT', "False") == "True" else False
-    RSS_ITEMS = getenv("RSS_ITEMS", "").split()
-    CHANNEL_USERNAME = getenv("CHANNEL_USERNAME", "")
-    START_PIC = getenv("START_PIC","https://envs.sh/im5.jpg")
+    THUMBNAIL = getenv("THUMBNAIL", "https://envs.sh/im5.jpg")
+    CHANNEL_USERNAME = getenv("CHANNEL_USERNAME", "@seishiro_atanime")
+    START_PIC = getenv("START_PIC", "https://envs.sh/im5.jpg")
     FORCE_PIC = getenv("FORCE_PIC", "https://envs.sh/im5.jpg")
-
 
 LOG_FILE_NAME = "automanga.txt"
 
