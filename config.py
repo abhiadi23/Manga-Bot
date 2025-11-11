@@ -12,15 +12,25 @@ class Config:
     BOT_TOKEN = getenv("BOT_TOKEN")
     DB_URI = getenv("DB_URI")
     DB_NAME = getenv("DB_NAME")
-    DB_CHANNEL_ID = int(getenv("CHANNEL_ID", "0"))
+    CHANNEL_ID = int(getenv("CHANNEL_ID", "0"))
+    DB_CHANNEL_ID = int(getenv("DB_CHANNEL_ID", "0"))
     MAIN_CHANNEL_URL = getenv("MAIN_CHANNEL_URL")
     PROTECT_CONTENT = True if getenv('PROTECT_CONTENT', "False") == "True" else False
     THUMBNAIL = getenv("THUMBNAIL", "https://envs.sh/im5.jpg")
     CHANNEL_USERNAME = getenv("CHANNEL_USERNAME", "@seishiro_atanime")
     START_PIC = getenv("START_PIC", "https://envs.sh/im5.jpg")
     FORCE_PIC = getenv("FORCE_PIC", "https://envs.sh/im5.jpg")
-
-LOG_FILE_NAME = "automanga.txt"
+    CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL", "300"))  # 5 minutes
+    MAX_CHAPTERS_PER_CHECK = int(os.getenv("MAX_CHAPTERS", "10"))
+    LANGUAGES = ["en"]  # Only English chapters
+    LANGUAGE_NAMES = {
+        "en": "English"}
+    DOWNLOAD_DIR = "downloads"
+    STATE_FILE = "bot_state.json"
+    CACHE_FILE = "manga_ids_cache.json"
+    LOG_FILE = "mangadex_bot.log"
+    API_BASE = "https://api.mangadex.org"
+    WEB_BASE = "https://mangadex.org"
 
 logging.basicConfig(
     level=logging.INFO,
